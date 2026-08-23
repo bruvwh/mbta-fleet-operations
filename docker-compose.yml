@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: mbta-postgres
+
+    environment:
+      POSTGRES_USER: mbta
+      POSTGRES_PASSWORD: mbta
+      POSTGRES_DB: mbta
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - mbta_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  mbta_postgres_data:
