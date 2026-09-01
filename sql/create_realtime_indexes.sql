@@ -106,3 +106,9 @@ ON trip_operations (
     scheduled_start_local,
     scheduled_end_local
 );
+
+CREATE INDEX IF NOT EXISTS
+    idx_processed_files_file_path
+ON processed_files (
+    file_path
+);
