@@ -35,7 +35,7 @@ def save_raw_feed(data):
     return filename
 
 
-def collect(interval_seconds=30):
+def collect(interval_seconds=5):
     print("Starting MBTA vehicle position collector")
     print(f"Polling every {interval_seconds} seconds")
     print("Press Ctrl+C to stop\n")

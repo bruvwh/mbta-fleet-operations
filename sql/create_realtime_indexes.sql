@@ -91,3 +91,18 @@ CREATE INDEX IF NOT EXISTS
 ON vehicle_event_schedule_matches (
     created_at
 );
+
+CREATE INDEX IF NOT EXISTS
+    idx_processed_files_processed_at
+ON processed_files (
+    processed_at
+);
+
+
+CREATE INDEX IF NOT EXISTS
+    idx_trip_operations_service_date_schedule
+ON trip_operations (
+    service_date,
+    scheduled_start_local,
+    scheduled_end_local
+);
