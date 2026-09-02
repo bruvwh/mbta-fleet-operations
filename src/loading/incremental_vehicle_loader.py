@@ -572,131 +572,295 @@ def load_batch(
 ):
 
     event_rows = []
-
     file_rows = []
-
 
     for prepared in prepared_files:
 
-        for record in prepared[
-            "records"
-        ]:
+        for record in prepared["records"]:
 
             event_rows.append(
-                event_to_tuple(
-                    record
-                )
+                event_to_tuple(record)
             )
-
 
         file_rows.append(
             (
                 prepared["checksum"],
-                prepared[
-                    "filepath_string"
-                ],
-                prepared[
-                    "ingestion_timestamp"
-                ],
-                len(
-                    prepared[
-                        "records"
-                    ]
-                ),
+                prepared["filepath_string"],
+                prepared["ingestion_timestamp"],
+                len(prepared["records"]),
             )
         )
 
+    events_seen = len(event_rows)
 
-    events_seen = len(
-        event_rows
-    )
+    try:
 
+        with connection.cursor() as cursor:
 
-    with connection.cursor() as cursor:
+            # ====================================================
+            # 1. Create temporary staging table
+            # ====================================================
 
-        # ----------------------------------------------------
-        # Batch event inserts
-        # ----------------------------------------------------
-
-        if event_rows:
-
-            cursor.executemany(
+            cursor.execute(
                 """
-                INSERT INTO vehicle_events (
-                    event_key,
-                    entity_id,
-                    vehicle_id,
-                    trip_id,
-                    route_id,
-                    schedule_relationship,
-                    direction_id,
-                    latitude,
-                    longitude,
-                    stop_id,
-                    current_stop_sequence,
-                    current_status,
-                    vehicle_timestamp,
-                    feed_timestamp,
-                    ingestion_timestamp
+                CREATE TEMP TABLE IF NOT EXISTS
+                temp_vehicle_events_stage (
+                    event_key TEXT,
+                    entity_id TEXT,
+                    vehicle_id TEXT,
+                    trip_id TEXT,
+                    route_id TEXT,
+                    schedule_relationship TEXT,
+                    direction_id INTEGER,
+                    latitude DOUBLE PRECISION,
+                    longitude DOUBLE PRECISION,
+                    stop_id TEXT,
+                    current_stop_sequence INTEGER,
+                    current_status INTEGER,
+                    vehicle_timestamp TIMESTAMPTZ,
+                    feed_timestamp TIMESTAMPTZ,
+                    ingestion_timestamp TIMESTAMPTZ
                 )
-
-                VALUES (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s
-                )
-
-                ON CONFLICT (
-                    event_key
-                )
-                DO NOTHING;
-                """,
-                event_rows,
-            )
-
-
-            events_inserted = (
-                cursor.rowcount
-            )
-
-        else:
-
-            events_inserted = 0
-
-
-        # ----------------------------------------------------
-        # Batch processed-file registry inserts
-        # ----------------------------------------------------
-
-        if file_rows:
-
-            cursor.executemany(
+                ON COMMIT DELETE ROWS;
                 """
-                INSERT INTO processed_files (
-                    file_checksum,
-                    file_path,
-                    ingestion_timestamp,
-                    event_count
-                )
-
-                VALUES (
-                    %s,
-                    %s,
-                    %s,
-                    %s
-                )
-
-                ON CONFLICT (
-                    file_checksum
-                )
-                DO NOTHING;
-                """,
-                file_rows,
             )
 
+            # Make sure staging starts empty.
+            cursor.execute(
+                """
+                TRUNCATE temp_vehicle_events_stage;
+                """
+            )
 
-    connection.commit()
+            # ====================================================
+            # 2. Stage all observations from this batch
+            # ====================================================
 
+            if event_rows:
+
+                cursor.executemany(
+                    """
+                    INSERT INTO temp_vehicle_events_stage (
+                        event_key,
+                        entity_id,
+                        vehicle_id,
+                        trip_id,
+                        route_id,
+                        schedule_relationship,
+                        direction_id,
+                        latitude,
+                        longitude,
+                        stop_id,
+                        current_stop_sequence,
+                        current_status,
+                        vehicle_timestamp,
+                        feed_timestamp,
+                        ingestion_timestamp
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s
+                    );
+                    """,
+                    event_rows,
+                )
+
+                # =================================================
+                # 3. Register globally unique events
+                #
+                # Only event_keys that are genuinely new are
+                # allowed to continue into either full event table.
+                # =================================================
+
+                cursor.execute(
+                    """
+                    WITH candidate_events AS (
+
+                        SELECT DISTINCT ON (event_key)
+                            event_key,
+                            ingestion_timestamp
+
+                        FROM temp_vehicle_events_stage
+
+                        ORDER BY
+                            event_key,
+                            ingestion_timestamp
+
+                    ),
+
+                    newly_registered AS (
+
+                        INSERT INTO vehicle_event_registry (
+                            event_key,
+                            ingestion_timestamp
+                        )
+
+                        SELECT
+                            event_key,
+                            ingestion_timestamp
+
+                        FROM candidate_events
+
+                        ON CONFLICT (event_key)
+                        DO NOTHING
+
+                        RETURNING
+                            event_key,
+                            ingestion_timestamp
+
+                    ),
+
+                    inserted_partitioned AS (
+
+                        INSERT INTO vehicle_events_v2 (
+                            event_key,
+                            entity_id,
+                            vehicle_id,
+                            trip_id,
+                            route_id,
+                            schedule_relationship,
+                            direction_id,
+                            latitude,
+                            longitude,
+                            stop_id,
+                            current_stop_sequence,
+                            current_status,
+                            vehicle_timestamp,
+                            feed_timestamp,
+                            ingestion_timestamp
+                        )
+
+                        SELECT
+                            s.event_key,
+                            s.entity_id,
+                            s.vehicle_id,
+                            s.trip_id,
+                            s.route_id,
+                            s.schedule_relationship,
+                            s.direction_id,
+                            s.latitude,
+                            s.longitude,
+                            s.stop_id,
+                            s.current_stop_sequence,
+                            s.current_status,
+                            s.vehicle_timestamp,
+                            s.feed_timestamp,
+                            s.ingestion_timestamp
+
+                        FROM temp_vehicle_events_stage AS s
+
+                        JOIN newly_registered AS n
+                            ON n.event_key = s.event_key
+                           AND n.ingestion_timestamp =
+                               s.ingestion_timestamp
+
+                        RETURNING event_key
+
+                    ),
+
+                    inserted_legacy AS (
+
+                        INSERT INTO vehicle_events (
+                            event_key,
+                            entity_id,
+                            vehicle_id,
+                            trip_id,
+                            route_id,
+                            schedule_relationship,
+                            direction_id,
+                            latitude,
+                            longitude,
+                            stop_id,
+                            current_stop_sequence,
+                            current_status,
+                            vehicle_timestamp,
+                            feed_timestamp,
+                            ingestion_timestamp
+                        )
+
+                        SELECT
+                            s.event_key,
+                            s.entity_id,
+                            s.vehicle_id,
+                            s.trip_id,
+                            s.route_id,
+                            s.schedule_relationship,
+                            s.direction_id,
+                            s.latitude,
+                            s.longitude,
+                            s.stop_id,
+                            s.current_stop_sequence,
+                            s.current_status,
+                            s.vehicle_timestamp,
+                            s.feed_timestamp,
+                            s.ingestion_timestamp
+
+                        FROM temp_vehicle_events_stage AS s
+
+                        JOIN newly_registered AS n
+                            ON n.event_key = s.event_key
+                           AND n.ingestion_timestamp =
+                               s.ingestion_timestamp
+
+                        ON CONFLICT (event_key)
+                        DO NOTHING
+
+                        RETURNING event_key
+
+                    )
+
+                    SELECT COUNT(*)
+                    FROM inserted_partitioned;
+                    """
+                )
+
+                events_inserted = (
+                    cursor.fetchone()[0]
+                )
+
+            else:
+
+                events_inserted = 0
+
+            # ====================================================
+            # 4. Mark raw files processed
+            #
+            # Still inside the same transaction.
+            # ====================================================
+
+            if file_rows:
+
+                cursor.executemany(
+                    """
+                    INSERT INTO processed_files (
+                        file_checksum,
+                        file_path,
+                        ingestion_timestamp,
+                        event_count
+                    )
+
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s
+                    )
+
+                    ON CONFLICT (
+                        file_checksum
+                    )
+                    DO NOTHING;
+                    """,
+                    file_rows,
+                )
+
+        connection.commit()
+
+    except Exception:
+
+        connection.rollback()
+        raise
 
     return (
         events_seen,

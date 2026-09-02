@@ -4,6 +4,9 @@
 --
 -- Incrementality is driven by processed_files.processed_at.
 --
+-- Vehicle events are read from the partitioned
+-- vehicle_events_v2 table.
+--
 -- Small incremental event batches are materialized and
 -- ANALYZED before GTFS matching so PostgreSQL has accurate
 -- cardinality estimates and chooses indexed lookups instead
@@ -27,11 +30,6 @@ CREATE TABLE IF NOT EXISTS pipeline_watermarks (
 
 -- ============================================================
 -- 2. Bootstrap schedule-matching watermark
---
--- Existing installations already processed historical files
--- using the previous schedule matcher.
---
--- Fresh installations start at -infinity.
 -- ============================================================
 
 INSERT INTO pipeline_watermarks (
@@ -68,12 +66,9 @@ DO NOTHING;
 -- ============================================================
 -- 3. Capture deterministic processing bounds
 --
--- processed_at represents when a raw file entered the
--- database pipeline.
---
 -- Using a fixed upper bound prevents files processed while
--- this transformation is running from being accidentally
--- skipped when the watermark advances.
+-- this transformation is running from being skipped when
+-- the watermark advances.
 -- ============================================================
 
 DROP TABLE IF EXISTS
@@ -148,11 +143,10 @@ ANALYZE
 -- ============================================================
 -- 5. Materialize unmatched scheduled vehicle events
 --
--- This is the key optimization.
+-- Events now come from vehicle_events_v2.
 --
--- PostgreSQL now receives accurate statistics for the small
--- incremental batch rather than estimating the batch as a
--- large fraction of the complete vehicle_events table.
+-- event_ingestion_timestamp is carried forward so the
+-- schedule-match row can reference the partitioned event.
 -- ============================================================
 
 DROP TABLE IF EXISTS
@@ -167,14 +161,20 @@ AS
 SELECT
 
     events.event_key,
+
+    events.ingestion_timestamp
+        AS event_ingestion_timestamp,
+
     events.trip_id,
+
     events.current_stop_sequence,
+
     events.vehicle_timestamp
 
 FROM temp_schedule_match_snapshots
     AS snapshots
 
-JOIN vehicle_events
+JOIN vehicle_events_v2
     AS events
 
   ON events.ingestion_timestamp
@@ -211,7 +211,8 @@ CREATE UNIQUE INDEX
     temp_schedule_match_events_pkey
 
 ON temp_schedule_match_events (
-    event_key
+    event_key,
+    event_ingestion_timestamp
 );
 
 
@@ -242,6 +243,8 @@ WITH event_candidates AS (
     SELECT
 
         events.event_key,
+
+        events.event_ingestion_timestamp,
 
         instances.feed_checksum,
 
@@ -333,7 +336,8 @@ ranked_candidates AS (
         ROW_NUMBER() OVER (
 
             PARTITION BY
-                event_key
+                event_key,
+                event_ingestion_timestamp
 
             ORDER BY
 
@@ -354,28 +358,47 @@ ranked_candidates AS (
 
 
 -- ============================================================
--- 8. Insert best match
+-- 8. Insert best schedule match
+--
+-- event_ingestion_timestamp is stored with event_key so
+-- the match references the partition-aware vehicle event.
 -- ============================================================
 
 INSERT INTO vehicle_event_schedule_matches (
 
     event_key,
+
+    event_ingestion_timestamp,
+
     feed_checksum,
+
     service_date,
+
     trip_id,
+
     stop_sequence,
+
     scheduled_local_time,
+
     difference_seconds
 )
 
 SELECT
 
     event_key,
+
+    event_ingestion_timestamp,
+
     feed_checksum,
+
     service_date,
+
     trip_id,
+
     current_stop_sequence,
+
     scheduled_local_time,
+
     difference_seconds
 
 FROM ranked_candidates
@@ -390,8 +413,8 @@ DO NOTHING;
 -- ============================================================
 -- 9. Advance watermark to captured upper bound
 --
--- Any files processed after batch_upper_bound remain pending
--- for the next schedule-matching run.
+-- Files processed after batch_upper_bound remain pending
+-- for the next run.
 -- ============================================================
 
 UPDATE pipeline_watermarks
