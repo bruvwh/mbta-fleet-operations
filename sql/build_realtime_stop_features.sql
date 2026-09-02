@@ -4,10 +4,19 @@
 -- Only trips affected by newly created schedule matches are
 -- recomputed.
 --
--- Small affected datasets are materialized into temporary
--- tables and ANALYZED so PostgreSQL has accurate statistics
--- and performs indexed lookups rather than scanning millions
--- of historical rows.
+-- Performance strategy:
+--   1. Capture a deterministic processing window.
+--   2. ANALYZE the one-row bounds table.
+--   3. Materialize affected trips.
+--   4. Materialize ALL schedule matches for those trips.
+--   5. ANALYZE the small intermediate datasets.
+--   6. Join to partitioned vehicle_events_v2 using:
+--
+--          event_key
+--          event_ingestion_timestamp
+--
+-- This avoids repeatedly scanning millions of historical rows
+-- while preserving complete-trip calculations.
 -- ============================================================
 
 
@@ -79,6 +88,7 @@ INSERT INTO pipeline_watermarks (
 )
 
 SELECT
+
     'build_realtime_stop_features',
 
     CASE
@@ -107,13 +117,16 @@ DO NOTHING;
 -- ============================================================
 -- 3. Capture this transformation's processing window
 --
--- We capture an upper bound now instead of using MAX(created_at)
--- at the end.
+-- We capture an upper bound before processing begins.
 --
--- This makes the batch deterministic. If new schedule matches
--- appear while this transformation is running, they remain
--- available for the next run instead of accidentally being
--- skipped by the watermark.
+-- If new schedule matches arrive during this transformation,
+-- they remain available for the next run instead of being
+-- skipped when the watermark advances.
+--
+-- ANALYZE is important even though this temporary table
+-- contains only one row. Without statistics PostgreSQL may
+-- badly overestimate its size and choose an inefficient plan
+-- against the multi-million-row schedule-match table.
 -- ============================================================
 
 DROP TABLE IF EXISTS
@@ -144,6 +157,10 @@ WHERE
         'build_realtime_stop_features';
 
 
+ANALYZE
+    temp_realtime_stop_feature_bounds;
+
+
 -- ============================================================
 -- 4. Materialize affected trips
 -- ============================================================
@@ -160,7 +177,9 @@ AS
 SELECT DISTINCT
 
     matches.feed_checksum,
+
     matches.service_date,
+
     matches.trip_id
 
 FROM vehicle_event_schedule_matches
@@ -179,10 +198,6 @@ WHERE
         <= bounds.batch_upper_bound;
 
 
--- ============================================================
--- Accurate statistics + fast indexed lookups
--- ============================================================
-
 CREATE UNIQUE INDEX
     temp_realtime_stop_feature_affected_trips_pkey
 
@@ -198,12 +213,96 @@ ANALYZE
 
 
 -- ============================================================
--- 5. Recompute schedule-match features for affected trips
+-- 5. Materialize ALL schedule matches for affected trips
 --
--- ALL matches belonging to an affected trip are included.
+-- A newly created observation makes its trip affected, but
+-- schedule-match statistics are recomputed from the complete
+-- set of observations currently available for that trip.
 --
--- This preserves correctness while avoiding a scan of the
--- complete historical schedule-match table.
+-- event_ingestion_timestamp is retained because it is the
+-- partition key required to locate the corresponding row in
+-- vehicle_events_v2.
+-- ============================================================
+
+DROP TABLE IF EXISTS
+    temp_realtime_stop_feature_matches;
+
+
+CREATE TEMP TABLE
+    temp_realtime_stop_feature_matches
+ON COMMIT DROP
+AS
+
+SELECT
+
+    matches.event_key,
+
+    matches.event_ingestion_timestamp,
+
+    matches.feed_checksum,
+
+    matches.service_date,
+
+    matches.trip_id,
+
+    matches.stop_sequence,
+
+    matches.difference_seconds
+
+FROM temp_realtime_stop_feature_affected_trips
+    AS affected
+
+JOIN vehicle_event_schedule_matches
+    AS matches
+
+  ON affected.feed_checksum
+        = matches.feed_checksum
+
+ AND affected.service_date
+        = matches.service_date
+
+ AND affected.trip_id
+        = matches.trip_id
+
+WHERE
+    matches.stop_sequence
+        IS NOT NULL;
+
+
+CREATE UNIQUE INDEX
+    temp_realtime_stop_feature_matches_event_idx
+
+ON temp_realtime_stop_feature_matches (
+    event_key,
+    event_ingestion_timestamp
+);
+
+
+CREATE INDEX
+    temp_realtime_stop_feature_matches_trip_stop_idx
+
+ON temp_realtime_stop_feature_matches (
+    feed_checksum,
+    service_date,
+    trip_id,
+    stop_sequence
+);
+
+
+ANALYZE
+    temp_realtime_stop_feature_matches;
+
+
+-- ============================================================
+-- 6. Recompute schedule-match features for affected trips
+--
+-- vehicle_events_v2 is partitioned by ingestion_timestamp.
+--
+-- Each schedule match now contains the two values required to
+-- locate its exact vehicle observation:
+--
+--     event_key
+--     event_ingestion_timestamp
 -- ============================================================
 
 DROP TABLE IF EXISTS
@@ -218,8 +317,11 @@ AS
 SELECT
 
     matches.feed_checksum,
+
     matches.service_date,
+
     matches.trip_id,
+
     matches.stop_sequence,
 
     events.stop_id,
@@ -239,52 +341,40 @@ SELECT
         AS max_difference_seconds
 
 
-FROM
-    temp_realtime_stop_feature_affected_trips
-        AS affected
-
-
-JOIN vehicle_event_schedule_matches
+FROM temp_realtime_stop_feature_matches
     AS matches
 
-  ON affected.feed_checksum
-        = matches.feed_checksum
 
- AND affected.service_date
-        = matches.service_date
-
- AND affected.trip_id
-        = matches.trip_id
-
-
-JOIN vehicle_events
+JOIN vehicle_events_v2
     AS events
 
-  ON matches.event_key
-        = events.event_key
+  ON events.event_key
+        = matches.event_key
+
+ AND events.ingestion_timestamp
+        = matches.event_ingestion_timestamp
 
 
 WHERE
-
-    matches.stop_sequence
-        IS NOT NULL
-
-    AND events.stop_id
+    events.stop_id
         IS NOT NULL
 
 
 GROUP BY
 
     matches.feed_checksum,
+
     matches.service_date,
+
     matches.trip_id,
+
     matches.stop_sequence,
+
     events.stop_id;
 
 
 -- ============================================================
--- Index the small temporary result so the final stop-level join
--- does not repeatedly scan the feature CTE.
+-- 7. Index the small stop-level schedule-match feature result
 -- ============================================================
 
 CREATE UNIQUE INDEX
@@ -304,36 +394,55 @@ ANALYZE
 
 
 -- ============================================================
--- 6. Build and upsert stop features
+-- 8. Build and upsert stop features
 -- ============================================================
 
 INSERT INTO realtime_stop_features (
 
     feed_checksum,
+
     service_date,
+
     trip_id,
+
     stop_sequence,
+
     stop_id,
 
+
     route_id,
+
     direction_id,
+
     vehicle_id,
 
+
     scheduled_arrival,
+
     arrival_estimate,
 
+
     arrival_deviation_seconds,
+
     arrival_uncertainty_seconds,
+
 
     inference_quality,
 
+
     schedule_match_median_difference_seconds,
+
     schedule_match_max_difference_seconds,
+
     schedule_match_anomaly,
 
+
     service_hour,
+
     day_of_week,
+
     is_weekend,
+
 
     updated_at
 )
@@ -341,24 +450,38 @@ INSERT INTO realtime_stop_features (
 SELECT
 
     performance.feed_checksum,
+
     performance.service_date,
+
     performance.trip_id,
+
     performance.stop_sequence,
+
     performance.stop_id,
 
+
     performance.route_id,
+
     performance.direction_id,
+
     performance.vehicle_id,
 
+
     performance.scheduled_arrival,
+
     performance.arrival_estimate,
 
+
     performance.arrival_deviation_seconds,
+
     performance.arrival_uncertainty_seconds,
+
 
     performance.inference_quality,
 
+
     match_features.median_difference_seconds,
+
     match_features.max_difference_seconds,
 
 
@@ -504,7 +627,7 @@ DO UPDATE SET
 
 
 -- ============================================================
--- 7. Advance watermark to the CAPTURED upper bound
+-- 9. Advance watermark to the CAPTURED upper bound
 --
 -- Any schedule matches created after batch_upper_bound remain
 -- for the next run.
@@ -515,6 +638,7 @@ UPDATE pipeline_watermarks
 SET
 
     last_processed_at = (
+
         SELECT
             batch_upper_bound
 
@@ -524,5 +648,6 @@ SET
 
     updated_at = NOW()
 
-WHERE transformation_name =
-    'build_realtime_stop_features';
+WHERE
+    transformation_name =
+        'build_realtime_stop_features';
