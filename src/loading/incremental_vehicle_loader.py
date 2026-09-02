@@ -670,7 +670,7 @@ def load_batch(
                 # 3. Register globally unique events
                 #
                 # Only event_keys that are genuinely new are
-                # allowed to continue into either full event table.
+                # allowed to continue into the partitioned event table.
                 # =================================================
 
                 cursor.execute(
@@ -754,57 +754,6 @@ def load_batch(
                             ON n.event_key = s.event_key
                            AND n.ingestion_timestamp =
                                s.ingestion_timestamp
-
-                        RETURNING event_key
-
-                    ),
-
-                    inserted_legacy AS (
-
-                        INSERT INTO vehicle_events (
-                            event_key,
-                            entity_id,
-                            vehicle_id,
-                            trip_id,
-                            route_id,
-                            schedule_relationship,
-                            direction_id,
-                            latitude,
-                            longitude,
-                            stop_id,
-                            current_stop_sequence,
-                            current_status,
-                            vehicle_timestamp,
-                            feed_timestamp,
-                            ingestion_timestamp
-                        )
-
-                        SELECT
-                            s.event_key,
-                            s.entity_id,
-                            s.vehicle_id,
-                            s.trip_id,
-                            s.route_id,
-                            s.schedule_relationship,
-                            s.direction_id,
-                            s.latitude,
-                            s.longitude,
-                            s.stop_id,
-                            s.current_stop_sequence,
-                            s.current_status,
-                            s.vehicle_timestamp,
-                            s.feed_timestamp,
-                            s.ingestion_timestamp
-
-                        FROM temp_vehicle_events_stage AS s
-
-                        JOIN newly_registered AS n
-                            ON n.event_key = s.event_key
-                           AND n.ingestion_timestamp =
-                               s.ingestion_timestamp
-
-                        ON CONFLICT (event_key)
-                        DO NOTHING
 
                         RETURNING event_key
 
