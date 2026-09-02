@@ -34,9 +34,15 @@ def profile_status_counts(cursor):
                 ELSE 'UNKNOWN'
             END AS status,
             COUNT(*) AS observations
-        FROM vehicle_events
-        WHERE ingestion_timestamp >= NOW() - (%s * INTERVAL '1 hour')
+
+        FROM vehicle_events_v2
+
+        WHERE
+            ingestion_timestamp
+                >= NOW() - (%s * INTERVAL '1 hour')
+
         GROUP BY current_status
+
         ORDER BY current_status;
         """,
         (RECENT_HOURS,),
@@ -52,6 +58,7 @@ def profile_trip_stop_coverage(cursor):
     cursor.execute(
         """
         WITH trip_stops AS (
+
             SELECT
                 vehicle_id,
                 trip_id,
@@ -72,14 +79,20 @@ def profile_trip_stop_coverage(cursor):
                     WHERE current_status = 2
                 ) AS transit_count
 
-            FROM vehicle_events
+            FROM vehicle_events_v2
 
             WHERE
-                ingestion_timestamp >= NOW() - (%s * INTERVAL '1 hour')
+                ingestion_timestamp
+                    >= NOW() - (%s * INTERVAL '1 hour')
+
                 AND vehicle_id IS NOT NULL
+
                 AND trip_id IS NOT NULL
+
                 AND stop_id IS NOT NULL
-                AND current_stop_sequence IS NOT NULL
+
+                AND current_stop_sequence
+                    IS NOT NULL
 
             GROUP BY
                 vehicle_id,
@@ -144,6 +157,7 @@ def profile_multiple_stopped_periods(cursor):
     cursor.execute(
         """
         WITH ordered AS (
+
             SELECT
                 vehicle_id,
                 trip_id,
@@ -158,21 +172,31 @@ def profile_multiple_stopped_periods(cursor):
                         trip_id,
                         stop_id,
                         current_stop_sequence
+
                     ORDER BY vehicle_timestamp
                 ) AS previous_status
 
-            FROM vehicle_events
+            FROM vehicle_events_v2
 
             WHERE
-                ingestion_timestamp >= NOW() - (%s * INTERVAL '1 hour')
+                ingestion_timestamp
+                    >= NOW() - (%s * INTERVAL '1 hour')
+
                 AND vehicle_id IS NOT NULL
+
                 AND trip_id IS NOT NULL
+
                 AND stop_id IS NOT NULL
-                AND current_stop_sequence IS NOT NULL
-                AND vehicle_timestamp IS NOT NULL
+
+                AND current_stop_sequence
+                    IS NOT NULL
+
+                AND vehicle_timestamp
+                    IS NOT NULL
         ),
 
         stop_periods AS (
+
             SELECT
                 vehicle_id,
                 trip_id,
@@ -182,6 +206,7 @@ def profile_multiple_stopped_periods(cursor):
                 COUNT(*) FILTER (
                     WHERE
                         current_status = 1
+
                         AND (
                             previous_status IS NULL
                             OR previous_status <> 1
@@ -198,6 +223,7 @@ def profile_multiple_stopped_periods(cursor):
         )
 
         SELECT
+
             COUNT(*) FILTER (
                 WHERE stopped_periods = 1
             ) AS one_period,
@@ -206,7 +232,8 @@ def profile_multiple_stopped_periods(cursor):
                 WHERE stopped_periods > 1
             ) AS multiple_periods,
 
-            MAX(stopped_periods) AS maximum_periods
+            MAX(stopped_periods)
+                AS maximum_periods
 
         FROM stop_periods
 
@@ -217,9 +244,20 @@ def profile_multiple_stopped_periods(cursor):
 
     row = cursor.fetchone()
 
-    print(f"Trip-stops with one stopped period:      {row[0]:,}")
-    print(f"Trip-stops with multiple stopped periods: {row[1]:,}")
-    print(f"Maximum stopped periods for one stop:     {row[2]}")
+    print(
+        f"Trip-stops with one stopped period:      "
+        f"{row[0]:,}"
+    )
+
+    print(
+        f"Trip-stops with multiple stopped periods: "
+        f"{row[1]:,}"
+    )
+
+    print(
+        f"Maximum stopped periods for one stop:     "
+        f"{row[2]}"
+    )
 
 
 def profile_backward_sequences(cursor):
@@ -228,6 +266,7 @@ def profile_backward_sequences(cursor):
     cursor.execute(
         """
         WITH ordered AS (
+
             SELECT
                 vehicle_id,
                 trip_id,
@@ -235,29 +274,44 @@ def profile_backward_sequences(cursor):
                 current_stop_sequence,
 
                 LAG(current_stop_sequence) OVER (
-                    PARTITION BY vehicle_id, trip_id
+                    PARTITION BY
+                        vehicle_id,
+                        trip_id
+
                     ORDER BY vehicle_timestamp
                 ) AS previous_stop_sequence
 
-            FROM vehicle_events
+            FROM vehicle_events_v2
 
             WHERE
-                ingestion_timestamp >= NOW() - (%s * INTERVAL '1 hour')
+                ingestion_timestamp
+                    >= NOW() - (%s * INTERVAL '1 hour')
+
                 AND vehicle_id IS NOT NULL
+
                 AND trip_id IS NOT NULL
-                AND vehicle_timestamp IS NOT NULL
-                AND current_stop_sequence IS NOT NULL
+
+                AND vehicle_timestamp
+                    IS NOT NULL
+
+                AND current_stop_sequence
+                    IS NOT NULL
         )
 
         SELECT
+
             COUNT(*) FILTER (
-                WHERE previous_stop_sequence IS NOT NULL
+                WHERE previous_stop_sequence
+                    IS NOT NULL
             ) AS transitions,
 
             COUNT(*) FILTER (
                 WHERE
-                    previous_stop_sequence IS NOT NULL
-                    AND current_stop_sequence < previous_stop_sequence
+                    previous_stop_sequence
+                        IS NOT NULL
+
+                    AND current_stop_sequence
+                        < previous_stop_sequence
             ) AS backward_transitions
 
         FROM ordered;
@@ -270,8 +324,15 @@ def profile_backward_sequences(cursor):
     transitions = row[0]
     backwards = row[1]
 
-    print(f"Sequence comparisons:       {transitions:,}")
-    print(f"Backward sequence changes:  {backwards:,}")
+    print(
+        f"Sequence comparisons:       "
+        f"{transitions:,}"
+    )
+
+    print(
+        f"Backward sequence changes:  "
+        f"{backwards:,}"
+    )
 
     if transitions:
         print(
@@ -286,49 +347,71 @@ def profile_observation_gaps(cursor):
     cursor.execute(
         """
         WITH ordered AS (
+
             SELECT
                 vehicle_id,
                 trip_id,
                 vehicle_timestamp,
 
                 LAG(vehicle_timestamp) OVER (
-                    PARTITION BY vehicle_id, trip_id
+                    PARTITION BY
+                        vehicle_id,
+                        trip_id
+
                     ORDER BY vehicle_timestamp
                 ) AS previous_timestamp
 
-            FROM vehicle_events
+            FROM vehicle_events_v2
 
             WHERE
-                ingestion_timestamp >= NOW() - (%s * INTERVAL '1 hour')
+                ingestion_timestamp
+                    >= NOW() - (%s * INTERVAL '1 hour')
+
                 AND vehicle_id IS NOT NULL
+
                 AND trip_id IS NOT NULL
-                AND vehicle_timestamp IS NOT NULL
+
+                AND vehicle_timestamp
+                    IS NOT NULL
         ),
 
         gaps AS (
+
             SELECT
+
                 EXTRACT(
                     EPOCH FROM (
-                        vehicle_timestamp - previous_timestamp
+                        vehicle_timestamp
+                        - previous_timestamp
                     )
                 ) AS gap_seconds
 
             FROM ordered
 
-            WHERE previous_timestamp IS NOT NULL
+            WHERE previous_timestamp
+                IS NOT NULL
         )
 
         SELECT
+
             AVG(gap_seconds),
+
             percentile_cont(0.50)
-                WITHIN GROUP (ORDER BY gap_seconds),
+                WITHIN GROUP (
+                    ORDER BY gap_seconds
+                ),
+
             percentile_cont(0.95)
-                WITHIN GROUP (ORDER BY gap_seconds),
+                WITHIN GROUP (
+                    ORDER BY gap_seconds
+                ),
+
             MAX(gap_seconds)
 
         FROM gaps
 
         WHERE gap_seconds > 0
+
           AND gap_seconds <= 60;
         """,
         (RECENT_HOURS,),
@@ -343,33 +426,59 @@ def profile_observation_gaps(cursor):
         else "Average gap: None"
     )
 
-    print(f"Median gap:  {row[1]} sec")
-    print(f"P95 gap:     {row[2]} sec")
-    print(f"Max <=60s:   {row[3]} sec")
+    print(
+        f"Median gap:  "
+        f"{row[1]} sec"
+    )
+
+    print(
+        f"P95 gap:     "
+        f"{row[2]} sec"
+    )
+
+    print(
+        f"Max <=60s:   "
+        f"{row[3]} sec"
+    )
 
 
 def main():
+
     print(
         f"Profiling realtime stop transitions "
-        f"from the last {RECENT_HOURS} hour(s)"
+        f"from the last {RECENT_HOURS} hour(s) "
+        f"using vehicle_events_v2"
     )
 
     connection = get_connection()
 
     try:
+
         with connection.cursor() as cursor:
+
             profile_status_counts(cursor)
+
             profile_trip_stop_coverage(cursor)
+
             profile_multiple_stopped_periods(cursor)
+
             profile_backward_sequences(cursor)
+
             profile_observation_gaps(cursor)
 
     finally:
+
         connection.close()
 
+
     print()
+
     print("=" * 60)
-    print("REALTIME STOP TRANSITION PROFILE COMPLETE")
+
+    print(
+        "REALTIME STOP TRANSITION PROFILE COMPLETE"
+    )
+
     print("=" * 60)
 
 

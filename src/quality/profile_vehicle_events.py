@@ -31,9 +31,11 @@ def get_latest_ingestion_timestamp(connection):
 
         cursor.execute(
             """
-            SELECT MAX(ingestion_timestamp)
-            AS latest_ingestion_timestamp
-            FROM vehicle_events;
+            SELECT
+                MAX(ingestion_timestamp)
+                    AS latest_ingestion_timestamp
+
+            FROM vehicle_events_v2;
             """
         )
 
@@ -126,7 +128,7 @@ def get_quality_summary(
             ingestion_timestamp,
             created_at
 
-        FROM vehicle_events
+        FROM vehicle_events_v2
 
         {time_filter}
     ),
@@ -395,7 +397,7 @@ def get_highest_latency_events(
         ) AS source_latency_seconds
 
 
-    FROM vehicle_events
+    FROM vehicle_events_v2
 
 
     WHERE
@@ -556,6 +558,7 @@ def print_report(
 
     print()
 
+
     print(
         "=== TOP 5 HIGHEST LATENCY EVENTS ==="
     )
@@ -651,7 +654,7 @@ if __name__ == "__main__":
         "--full",
         action="store_true",
         help=(
-            "Audit the complete vehicle_events "
+            "Audit the complete vehicle_events_v2 "
             "history instead of the recent window."
         ),
     )
