@@ -1,0 +1,24 @@
+name: "mbta_fleet_operations"
+version: "1.0.0"
+config-version: 2
+
+profile: "mbta_fleet_operations"
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  mbta_fleet_operations:
+    staging:
+      +materialized: view
+
+    intermediate:
+      +materialized: view
+
+    marts:
+      +materialized: table

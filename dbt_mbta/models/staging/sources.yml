@@ -1,0 +1,32 @@
+version: 2
+
+sources:
+  - name: mbta
+    database: mbta-fleet-operations-alu
+    schema: mbta_analytics
+
+    tables:
+
+      - name: lamp_stop_events
+        description: >
+          Canonical MBTA LAMP subway stop-level historical performance
+          data produced by the Spark backfill pipeline.
+
+      - name: vehicle_events
+        description: >
+          Canonical MBTA GTFS-Realtime VehiclePositions observations
+          loaded into BigQuery from the realtime event pipeline.
+
+      - name: gtfs_trip_instances
+        description: >
+          Scheduled GTFS trip instances by feed version and service date.
+
+      - name: gtfs_stop_instances
+        description: >
+          Scheduled GTFS stop instances containing route, direction,
+          stop sequence, and scheduled arrival and departure times.
+
+      - name: vehicle_event_schedule_matches
+        description: >
+          Realtime vehicle observations matched to scheduled GTFS trip
+          and stop instances.

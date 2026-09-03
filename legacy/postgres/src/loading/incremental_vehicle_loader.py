@@ -11,6 +11,7 @@ from datetime import (
 from pathlib import Path
 
 import psycopg
+from psycopg import sql
 
 from google.transit import (
     gtfs_realtime_pb2
@@ -563,6 +564,96 @@ def event_to_tuple(record):
 
 
 # ============================================================
+# Partition management
+# ============================================================
+
+def ensure_vehicle_event_partition(
+    cursor,
+    partition_date,
+):
+
+    partition_name = (
+        "vehicle_events_v2_"
+        f"{partition_date:%Y_%m_%d}"
+    )
+
+    partition_start = datetime(
+        partition_date.year,
+        partition_date.month,
+        partition_date.day,
+        tzinfo=timezone.utc,
+    )
+
+    partition_end = (
+        partition_start
+        + timedelta(days=1)
+    )
+
+    cursor.execute(
+        """
+        SELECT to_regclass(%s);
+        """,
+        (f"public.{partition_name}",),
+    )
+
+    partition_exists = (
+        cursor.fetchone()[0]
+        is not None
+    )
+
+    if partition_exists:
+        return False
+
+    cursor.execute(
+        sql.SQL(
+            """
+            CREATE TABLE IF NOT EXISTS {}
+            PARTITION OF vehicle_events_v2
+            FOR VALUES FROM ({}) TO ({});
+            """
+        ).format(
+            sql.Identifier(partition_name),
+            sql.Literal(partition_start),
+            sql.Literal(partition_end),
+        )
+    )
+
+    print(
+        f"Created partition: "
+        f"{partition_name} "
+        f"[{partition_start.isoformat()} -> "
+        f"{partition_end.isoformat()})"
+    )
+
+    return True
+
+
+def ensure_vehicle_event_partitions(
+    cursor,
+    prepared_files,
+):
+
+    partition_dates = sorted(
+        {
+            prepared[
+                "ingestion_timestamp"
+            ]
+            .astimezone(timezone.utc)
+            .date()
+
+            for prepared in prepared_files
+        }
+    )
+
+    for partition_date in partition_dates:
+
+        ensure_vehicle_event_partition(
+            cursor,
+            partition_date,
+        )
+
+
+# ============================================================
 # Batch loading
 # ============================================================
 
@@ -598,7 +689,16 @@ def load_batch(
         with connection.cursor() as cursor:
 
             # ====================================================
-            # 1. Create temporary staging table
+            # 1. Ensure required UTC daily partitions exist
+            # ====================================================
+
+            ensure_vehicle_event_partitions(
+                cursor,
+                prepared_files,
+            )
+
+            # ====================================================
+            # 2. Create temporary staging table
             # ====================================================
 
             cursor.execute(
@@ -633,7 +733,7 @@ def load_batch(
             )
 
             # ====================================================
-            # 2. Stage all observations from this batch
+            # 3. Stage all observations from this batch
             # ====================================================
 
             if event_rows:
@@ -667,7 +767,7 @@ def load_batch(
                 )
 
                 # =================================================
-                # 3. Register globally unique events
+                # 4. Register globally unique events
                 #
                 # Only event_keys that are genuinely new are
                 # allowed to continue into the partitioned event table.
@@ -773,7 +873,7 @@ def load_batch(
                 events_inserted = 0
 
             # ====================================================
-            # 4. Mark raw files processed
+            # 5. Mark raw files processed
             #
             # Still inside the same transaction.
             # ====================================================

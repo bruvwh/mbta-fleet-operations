@@ -1,0 +1,62 @@
+version: 2
+
+models:
+
+  - name: mart_historical_route_daily
+    description: >
+      Historical daily MBTA subway operational performance
+      summarized by route and direction.
+
+    columns:
+
+      - name: service_date
+        data_tests:
+          - not_null
+
+      - name: route_id
+        data_tests:
+          - not_null
+
+      - name: direction_id
+        data_tests:
+          - not_null
+
+      - name: stop_observation_count
+        data_tests:
+          - not_null
+
+      - name: trip_count
+        data_tests:
+          - not_null
+
+
+  - name: mart_historical_route_hourly
+    description: >
+      Historical hourly MBTA subway operational performance
+      summarized by service date, route, direction, and hour.
+
+    columns:
+
+      - name: service_date
+        data_tests:
+          - not_null
+
+      - name: route_id
+        data_tests:
+          - not_null
+
+      - name: direction_id
+        data_tests:
+          - not_null
+
+      - name: service_hour
+        data_tests:
+          - not_null
+
+      - name: stop_observation_count
+        data_tests:
+          - not_null
+
+      - name: trip_count
+        data_tests:
+          - not_null

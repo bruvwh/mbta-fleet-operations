@@ -6,10 +6,39 @@
 
 -- ============================================================
 -- REALTIME VEHICLE DATA
+--
+-- Realtime observations are stored in a range-partitioned
+-- parent table by ingestion_timestamp.
+--
+-- event_key uniqueness across all partitions is enforced by
+-- vehicle_event_registry before rows are inserted.
+--
+-- Daily child partitions are created automatically by the
+-- incremental loader as new ingestion dates arrive.
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS vehicle_events (
+
+-- ------------------------------------------------------------
+-- Global event-key registry
+--
+-- PostgreSQL requires a unique/primary-key constraint on a
+-- partitioned table to include the partition key. Because the
+-- logical event_key must remain globally unique across dates,
+-- this narrow registry provides that global uniqueness check.
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS vehicle_event_registry (
     event_key TEXT PRIMARY KEY,
+    ingestion_timestamp TIMESTAMPTZ NOT NULL
+);
+
+
+-- ------------------------------------------------------------
+-- Partitioned realtime vehicle observations
+-- ------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS vehicle_events_v2 (
+    event_key TEXT NOT NULL,
 
     entity_id TEXT,
     vehicle_id TEXT,
@@ -27,9 +56,15 @@ CREATE TABLE IF NOT EXISTS vehicle_events (
 
     vehicle_timestamp TIMESTAMPTZ,
     feed_timestamp TIMESTAMPTZ,
-    ingestion_timestamp TIMESTAMPTZ,
+
+    ingestion_timestamp TIMESTAMPTZ NOT NULL,
 
     created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    PRIMARY KEY (
+        event_key,
+        ingestion_timestamp
+    ),
 
     CHECK (
         latitude IS NULL
@@ -40,6 +75,9 @@ CREATE TABLE IF NOT EXISTS vehicle_events (
         longitude IS NULL
         OR longitude BETWEEN -180 AND 180
     )
+)
+PARTITION BY RANGE (
+    ingestion_timestamp
 );
 
 
@@ -52,6 +90,16 @@ CREATE TABLE IF NOT EXISTS processed_files (
     processed_at TIMESTAMPTZ DEFAULT NOW(),
 
     event_count INTEGER NOT NULL
+);
+
+
+-- Tracks incremental transformation watermarks.
+CREATE TABLE IF NOT EXISTS pipeline_watermarks (
+    transformation_name TEXT PRIMARY KEY,
+
+    last_processed_at TIMESTAMPTZ NOT NULL,
+
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 
@@ -427,10 +475,16 @@ CREATE TABLE IF NOT EXISTS gtfs_trip_instances (
 --
 -- Connects a realtime vehicle observation to the corresponding
 -- scheduled GTFS trip instance and stop.
+--
+-- event_ingestion_timestamp is stored with event_key so the
+-- match can reference the exact row in the partitioned
+-- vehicle_events_v2 table.
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS vehicle_event_schedule_matches (
     event_key TEXT PRIMARY KEY,
+
+    event_ingestion_timestamp TIMESTAMPTZ NOT NULL,
 
     feed_checksum TEXT NOT NULL,
     service_date DATE NOT NULL,
@@ -443,8 +497,14 @@ CREATE TABLE IF NOT EXISTS vehicle_event_schedule_matches (
 
     created_at TIMESTAMPTZ DEFAULT NOW(),
 
-    FOREIGN KEY (event_key)
-        REFERENCES vehicle_events(event_key),
+    FOREIGN KEY (
+        event_key,
+        event_ingestion_timestamp
+    )
+        REFERENCES vehicle_events_v2(
+            event_key,
+            ingestion_timestamp
+        ),
 
     FOREIGN KEY (
         feed_checksum,

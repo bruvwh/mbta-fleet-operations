@@ -1,0 +1,37 @@
+version: 2
+
+models:
+  - name: stg_lamp_stop_events
+    description: >
+      Canonical historical MBTA LAMP subway stop-level observations,
+      staged from the Spark-processed BigQuery table.
+
+    columns:
+      - name: service_date
+        description: MBTA service date for the observation.
+        data_tests:
+          - not_null
+
+      - name: trip_id
+        description: GTFS trip identifier.
+        data_tests:
+          - not_null
+
+      - name: stop_sequence
+        description: Position of the stop within the trip.
+        data_tests:
+          - not_null
+
+      - name: stop_id
+        description: GTFS stop identifier.
+        data_tests:
+          - not_null
+
+      - name: route_id
+        description: MBTA route identifier.
+
+      - name: stop_timestamp
+        description: Observed timestamp at the stop.
+
+      - name: move_timestamp
+        description: Timestamp associated with vehicle movement toward the stop.
