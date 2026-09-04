@@ -2,103 +2,107 @@
 
 An end-to-end cloud data platform for analyzing MBTA fleet operations using realtime vehicle telemetry, scheduled GTFS service, and historical LAMP subway data.
 
-The platform collects MBTA GTFS-Realtime VehiclePositions, stores immutable raw snapshots in Google Cloud Storage, loads deduplicated vehicle events into BigQuery, transforms realtime and historical data with dbt and Spark, and produces stop-, trip-, and route-level operational metrics for a Streamlit dashboard.
+The platform collects MBTA GTFS-Realtime VehiclePositions, preserves immutable raw snapshots in Google Cloud Storage, loads deduplicated vehicle events into BigQuery, transforms realtime and historical data with dbt and Spark, and produces stop-, trip-, and route-level operational metrics for a Streamlit dashboard.
 
-## Project Goals
+## Key Results
 
-The project was designed around several practical data engineering problems:
-
-- ingest frequently updating GTFS-Realtime vehicle data
-- preserve raw source data for reproducibility and backfills
-- handle observations repeated across consecutive realtime snapshots
-- make ingestion idempotent
-- version and match realtime observations against scheduled GTFS service
-- infer stop arrival and departure behavior from noisy vehicle telemetry
-- combine realtime service with historical operating patterns
-- generate anomaly and reliability metrics at operationally useful grains
-- support incremental transformation as the dataset grows
-- orchestrate realtime and historical workloads independently
+- Processed **8.8M+ unique GTFS-Realtime vehicle events**
+- Maintained **0 duplicate event keys** across manual reruns and scheduled Airflow executions
+- Generated **~968K stop-level operational records**
+- Achieved **94.35% historical-baseline coverage** across subway operations
+- Completed the nine-model incremental dbt realtime branch in **~69 seconds**
+- Removed **41.4% repeated snapshot observations** in a representative realtime ingestion benchmark
 
 ## Architecture
 
-```text
-                         MBTA APIs / Public Data
-                                  |
-             +--------------------+--------------------+
-             |                                         |
-             v                                         v
-    GTFS-Realtime VehiclePositions              Historical LAMP
-             |                                         |
-             v                                         v
-    Python GCS Collector                     Google Cloud Storage
-             |                                         |
-             v                                         v
-    Google Cloud Storage                   Dataproc Serverless Spark
-      raw protobuf snapshots                         |
-             |                                       v
-             v                                  BigQuery LAMP
-    Python BigQuery Loader                           |
-             |                                       |
-             v                                       |
-       BigQuery vehicle_events                       |
-             |                                       |
-             +-------------------+-------------------+
-                                 |
-                                 v
-                                dbt
-                                 |
-             +-------------------+-------------------+
-             |                   |                   |
-             v                   v                   v
-       Schedule Matching     Stop Inference    Historical Baselines
-             |                   |                   |
-             +-------------------+-------------------+
-                                 |
-                                 v
-                       Stop Performance / Features
-                                 |
-                                 v
-                          Anomaly Scoring
-                                 |
-                    +------------+------------+
-                    |                         |
-                    v                         v
-              Trip-Level Marts          Route-Level Marts
-                    |                         |
-                    +------------+------------+
-                                 |
-                                 v
-                     Streamlit Dashboard
+```mermaid
+flowchart TD
+
+    VP[MBTA GTFS-Realtime<br/>VehiclePositions]
+    GTFS[Static GTFS]
+    LAMP[Historical MBTA LAMP]
+
+    COLLECT[Python Realtime Collector]
+    GCS[(Google Cloud Storage<br/>Raw Data)]
+    LOADER[Python BigQuery Loader]
+    EVENTS[(BigQuery<br/>vehicle_events)]
+
+    SPARK[Dataproc Serverless<br/>Apache Spark]
+    HIST[(BigQuery<br/>Historical Stop Events)]
+
+    MATCH[dbt<br/>Schedule Matching]
+    STOPS[dbt<br/>Stop Inference]
+    PERF[dbt<br/>Performance & Features]
+    BASE[dbt<br/>Historical Baselines]
+    ANOM[dbt<br/>Anomaly Scoring]
+
+    TRIP[(Trip-Level Marts)]
+    ROUTE[(Route Hourly / Daily Marts)]
+
+    DASH[Streamlit<br/>Operations Dashboard]
+
+    AIR_RT[Airflow<br/>Realtime DAG<br/>Every 5 Minutes]
+    AIR_HIST[Airflow<br/>Historical DAG]
+
+    VP --> COLLECT
+    COLLECT --> GCS
+    GCS --> LOADER
+    LOADER --> EVENTS
+
+    GTFS --> MATCH
+    EVENTS --> MATCH
+
+    MATCH --> STOPS
+    STOPS --> PERF
+
+    LAMP --> GCS
+    GCS --> SPARK
+    SPARK --> HIST
+    HIST --> BASE
+
+    PERF --> ANOM
+    BASE --> ANOM
+
+    ANOM --> TRIP
+    ANOM --> ROUTE
+
+    TRIP --> DASH
+    ROUTE --> DASH
+
+    AIR_RT -. orchestrates .-> LOADER
+    AIR_RT -. orchestrates .-> MATCH
+
+    AIR_HIST -. orchestrates .-> SPARK
+    AIR_HIST -. orchestrates .-> BASE
 ```
+
+## Project Goals
+
+The project was designed around practical data engineering problems:
+
+- ingest frequently updating GTFS-Realtime vehicle data
+- preserve raw data for reproducibility and backfills
+- handle observations repeated across consecutive realtime snapshots
+- make ingestion idempotent
+- version and match realtime events against scheduled GTFS service
+- infer stop arrival and departure behavior from noisy vehicle telemetry
+- combine realtime observations with historical operating patterns
+- generate anomaly and reliability metrics at operationally useful grains
+- support incremental transformation as the dataset grows
+- independently orchestrate realtime and historical workloads
 
 ## Technology Stack
 
-### Cloud and Storage
-
-- Google Cloud Platform
-- Google Cloud Storage
-- BigQuery
-- Dataproc Serverless
-
-### Data Engineering
-
-- Python
-- Apache Airflow 3
-- Apache Spark
-- dbt
-- SQL
-- GTFS-Realtime Protocol Buffers
-
-### Analytics
-
-- historical MBTA LAMP data
-- scheduled GTFS data
-- IQR-based historical anomaly baselines
-- stop arrival/departure inference
-
-### Presentation
-
-- Streamlit
+| Layer | Technologies |
+|---|---|
+| Ingestion | Python, GTFS-Realtime Protocol Buffers |
+| Orchestration | Apache Airflow 3 |
+| Raw storage | Google Cloud Storage |
+| Warehouse | BigQuery |
+| Transformation | dbt, SQL |
+| Historical processing | Apache Spark, Dataproc Serverless |
+| Analytics | GTFS schedules, historical LAMP, IQR-based anomaly baselines |
+| Presentation | Streamlit |
 
 ## Realtime Pipeline
 
@@ -123,22 +127,25 @@ BigQuery vehicle_events
 dbt realtime transformations
         |
         v
-trip / route marts
+stop / trip / route marts
+        |
+        v
+Streamlit dashboard
 ```
 
-Raw protobuf snapshots remain immutable in GCS so warehouse tables can be rebuilt without depending on the live MBTA endpoint.
+Raw protobuf snapshots remain immutable in GCS, allowing warehouse tables to be reconstructed without depending on the live MBTA endpoint.
 
-Airflow runs the realtime cloud pipeline every five minutes.
+Airflow orchestrates the realtime cloud pipeline every five minutes.
 
 ## Idempotent Realtime Ingestion
 
-GTFS-Realtime feeds may repeat an unchanged vehicle observation across consecutive snapshots.
+GTFS-Realtime feeds may repeat an unchanged logical vehicle observation across several consecutive snapshots.
 
-Loading each snapshot row directly would therefore create duplicate logical events.
+Loading every snapshot row directly would therefore create duplicate warehouse events.
 
 The platform creates a SHA-256 `event_key`.
 
-When a vehicle timestamp is available:
+When a vehicle timestamp is present:
 
 ```text
 vehicle_id | vehicle_timestamp | trip_id
@@ -150,15 +157,17 @@ When it is unavailable:
 vehicle_id | feed_timestamp | trip_id | entity_id
 ```
 
-The loader uses two independent deduplication layers.
+The loader then applies two independent deduplication layers.
 
 ### Python deduplication
 
-Rows are grouped by `event_key` before BigQuery staging, with the earliest ingestion observation retained.
+Before staging, rows are grouped by `event_key`.
+
+If the same logical observation appears in multiple snapshots within one batch, the earliest ingestion observation is retained.
 
 ### BigQuery deduplication
 
-The staging source is independently ranked:
+The staging source independently applies:
 
 ```sql
 ROW_NUMBER() OVER (
@@ -170,55 +179,65 @@ ROW_NUMBER() OVER (
 )
 ```
 
-Only rank 1 is presented to the BigQuery `MERGE`.
+Only `event_rank = 1` is presented to the target `MERGE`.
 
-The final insert uses:
+The final warehouse merge matches on:
 
 ```text
-MERGE ON event_key
+event_key
 ```
 
-This makes reruns and overlapping realtime snapshots idempotent.
+This makes overlapping loads and reruns idempotent.
 
 ### Validation
 
-The live warehouse was validated with:
+The live ingestion path was tested through:
 
+- an initial clean warehouse baseline
 - manual loader execution
 - repeated manual execution
 - two consecutive scheduled Airflow runs
-- approximately 8.8 million stored realtime vehicle events
+- duplicate checks after each stage
 
-Result:
+Final result:
 
 ```text
 duplicate event_keys = 0
 ```
 
-A benchmark batch containing 6,856 raw observations produced 4,017 unique event keys, eliminating 2,839 repeated snapshot observations before staging.
+At validation time, the warehouse contained approximately **8.8 million unique realtime vehicle events**.
 
-That batch removed approximately 41% of redundant realtime observations before warehouse insertion.
+A representative benchmark batch contained:
+
+```text
+Raw observations:             6,856
+Unique event keys:            4,017
+Repeated observations:        2,839
+Repeated rows removed:        41.4%
+```
+
+The 41.4% figure describes that benchmark batch rather than a fixed source-wide deduplication rate.
 
 ## Scheduled GTFS Matching
 
-Realtime observations are matched to scheduled GTFS service using feed-version-aware schedule data.
+Realtime vehicle events are matched against versioned scheduled GTFS service.
 
-The transformation layer accounts for:
+The matching layer incorporates:
 
-- GTFS feed versions
-- service dates
-- trip IDs
-- stop sequences
-- local service time
-- realtime event timestamps
+- GTFS feed checksum
+- service date
+- trip ID
+- stop sequence
+- scheduled local time
+- realtime event timing
 
-The resulting schedule-match data supports downstream stop inference and service-performance calculations.
+The output provides the schedule context used by downstream stop inference and performance calculations.
 
 ## Stop Inference
 
 VehiclePositions does not directly provide complete arrival and departure events for every scheduled stop.
 
-The realtime transformation layer therefore derives stop-level operational records from multiple vehicle observations.
+The transformation layer therefore derives stop-level operational records from sequences of realtime observations.
 
 Output includes:
 
@@ -227,11 +246,11 @@ Output includes:
 - inferred departure bounds
 - arrival and departure estimates
 - observation counts
-- number of observed vehicles
-- inference uncertainty
+- observed vehicle counts
+- arrival/departure uncertainty
 - inference quality classification
 
-The stop-event grain is:
+The validated stop-event grain is:
 
 ```text
 feed_checksum
@@ -241,51 +260,55 @@ stop_sequence
 stop_id
 ```
 
-Validation found zero duplicate rows at this grain.
+Validation found:
 
-The current realtime dataset contains approximately 967,000 stop-level operational records.
+```text
+duplicate rows at stop-event grain = 0
+```
+
+The current warehouse contains approximately **968K stop-level operational records**.
 
 ## Historical LAMP Pipeline
 
-Historical MBTA LAMP data is processed separately from the realtime pipeline.
+Historical MBTA LAMP subway data is processed separately from realtime ingestion.
 
 ```text
-Historical LAMP files
-        |
-        v
+Historical LAMP
+      |
+      v
 Google Cloud Storage
-        |
-        v
+      |
+      v
 Dataproc Serverless Spark
-        |
-        v
-BigQuery lamp_stop_events
-        |
-        v
+      |
+      v
+BigQuery historical stop events
+      |
+      v
 dbt historical transformations
-        |
-        v
+      |
+      v
 historical stop baselines
 ```
 
-Spark is used to process the larger historical source before loading normalized stop events into BigQuery.
+Spark processes the historical source before normalized stop events are loaded into BigQuery.
 
-Airflow orchestrates this historical pipeline independently of realtime ingestion.
+Airflow orchestrates the historical pipeline independently of the five-minute realtime DAG.
 
 ## Historical Anomaly Baselines
 
 Historical stop behavior is summarized using robust delay distributions.
 
-Baseline fields include:
+Baseline statistics include:
 
-- first quartile delay
-- median delay
-- third quartile delay
+- first quartile
+- median
+- third quartile
 - interquartile range
 - lower anomaly fence
 - upper anomaly fence
 
-Realtime stop performance is then compared with the corresponding historical stop baseline.
+Realtime stop performance is compared with the corresponding historical baseline.
 
 Final classifications include:
 
@@ -296,17 +319,28 @@ CERTAIN_LATE
 NOT_EVALUABLE
 ```
 
-The historical LAMP source primarily supports subway operations.
+Historical LAMP primarily supports subway operations.
 
-Across the subway routes used by the anomaly framework, approximately **94.35%** of realtime stop events had a usable historical baseline.
+Across:
+
+```text
+Red
+Orange
+Blue
+Green-B
+Green-C
+Green-D
+Green-E
+Mattapan
+```
+
+approximately **94.35% of realtime subway stop events** had a usable historical baseline.
 
 ## dbt Transformation Layer
 
-The dbt project contains staging, intermediate, and mart models.
+The warehouse transformation project follows staging, intermediate, and mart layers.
 
 ### Staging
-
-Examples:
 
 ```text
 stg_vehicle_events
@@ -318,10 +352,9 @@ stg_lamp_stop_events
 
 ### Intermediate
 
-Examples:
-
 ```text
 int_vehicle_event_schedule_matches_cloud
+
 int_realtime_stop_events
 int_realtime_stop_performance
 int_realtime_stop_features
@@ -346,22 +379,22 @@ mart_historical_route_hourly
 mart_historical_route_daily
 ```
 
-## Current Warehouse Scale
+## Warehouse Scale
 
 Recent validation produced approximately:
 
 | Dataset | Rows |
 |---|---:|
-| Realtime vehicle events | 8.8M |
-| Realtime stop events | 968K |
-| Realtime stop performance | 968K |
-| Realtime stop features | 968K |
-| Realtime anomaly scores | 968K |
-| Realtime trip anomaly mart | 55K |
-| Realtime route-hourly mart | 22K |
-| Realtime route-daily mart | 2.4K |
+| Realtime vehicle events | **8.8M** |
+| Realtime stop events | **968K** |
+| Realtime stop performance | **968K** |
+| Realtime stop features | **968K** |
+| Realtime anomaly scores | **968K** |
+| Realtime trip anomaly mart | **55K** |
+| Realtime route-hourly mart | **22K** |
+| Realtime route-daily mart | **2.4K** |
 
-Exact counts continue to increase while realtime collection runs.
+Counts continue to increase while realtime collection runs.
 
 ## Performance Benchmarks
 
@@ -371,13 +404,13 @@ Representative incremental batch:
 
 ```text
 GCS snapshots:                  9
-Raw vehicle observations:  6,856
-Unique event keys:         4,017
-Repeated observations:     2,839
-Wall-clock runtime:        23.14 sec
+Raw vehicle observations:   6,856
+Unique event keys:          4,017
+Repeated observations:      2,839
+Wall-clock runtime:         23.14 sec
 ```
 
-Most wall-clock time is cloud I/O and BigQuery job latency rather than local CPU execution.
+Local CPU utilization represented only a small fraction of wall-clock runtime, indicating that the loader is primarily bounded by GCS, network, and BigQuery operations rather than local Python computation.
 
 ### Incremental dbt Realtime Branch
 
@@ -386,23 +419,36 @@ A nine-model incremental BigQuery transformation run completed in:
 ```text
 dbt execution time: 66.04 sec
 wall-clock time:    68.99 sec
-status:             9 PASS / 0 ERROR
+
+PASS:   9
+WARN:   0
+ERROR:  0
 ```
 
-The run included schedule matching, stop inference, performance calculation, feature engineering, anomaly scoring, and operational marts.
+The run included:
+
+- schedule matching
+- stop inference
+- stop performance
+- stop feature engineering
+- anomaly scoring
+- trip anomaly aggregation
+- route-hourly aggregation
+- route-daily aggregation
 
 ## Data Quality
 
-The project includes dbt tests and standalone profiling tools covering:
+The project includes dbt tests and standalone profiling utilities covering:
 
+- vehicle-event uniqueness
 - schedule-match uniqueness
 - schedule-match validity
-- realtime stop-event uniqueness
-- realtime stop-event validity
+- stop-event uniqueness
+- stop-event validity
 - anomaly-score validity
 - historical baseline validity
 - historical baseline grain uniqueness
-- historical route mart uniqueness
+- historical route-mart uniqueness
 - LAMP staging uniqueness
 - vehicle-event schedule consistency
 
@@ -410,18 +456,29 @@ The full dbt test suite passes.
 
 ## Dashboard
 
-The Streamlit dashboard queries BigQuery directly.
+The Streamlit dashboard queries BigQuery directly and does not require PostgreSQL.
 
-It provides operational views built from the final realtime marts and anomaly tables, including:
+It provides operational views for:
 
-- route-level reliability
+- route-level service reliability
 - stop-level delay behavior
 - anomaly classifications
 - historical baseline comparisons
 - service-date filtering
 - subway route filtering
+- individual trip inspection
 
-The dashboard runtime does not require PostgreSQL.
+### Operations Overview
+
+The overview summarizes observed and evaluable service, sustained anomaly rates, coverage limitations, and route-level operational performance.
+
+![MBTA operations dashboard](docs/images/dashboard_overview.png)
+
+### Trip-Level Analysis
+
+Individual trips can be inspected stop by stop to show how arrival deviation develops over the course of service and where historically abnormal delay behavior occurs.
+
+![MBTA trip-level anomaly analysis](docs/images/dashboard_trip_analysis.png)
 
 Run locally with:
 
@@ -429,9 +486,9 @@ Run locally with:
 streamlit run src/dashboard/app_bigquery.py
 ```
 
-## Airflow
+## Airflow Orchestration
 
-Two cloud DAGs orchestrate the platform:
+Two DAGs orchestrate the current cloud platform:
 
 ```text
 mbta_realtime_cloud_pipeline
@@ -453,13 +510,41 @@ export AIRFLOW__CORE__DAGS_FOLDER="$PWD/dags"
 airflow standalone
 ```
 
-The `AIRFLOW__CORE__DAGS_FOLDER` override is required because the repository keeps DAG definitions in the top-level `dags/` directory rather than under `.airflow/dags`.
+The explicit DAG-folder configuration is required because this repository stores DAG definitions in the top-level `dags/` directory rather than inside `.airflow/dags`.
+
+## Local Environments
+
+The project keeps major runtimes separated to avoid conflicting dependencies.
+
+### Cloud Python
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Airflow
+
+```bash
+python -m venv .airflow-venv
+source .airflow-venv/bin/activate
+pip install -r requirements-airflow.txt
+```
+
+### dbt
+
+```bash
+python -m venv .dbt-venv
+source .dbt-venv/bin/activate
+pip install -r requirements-dbt.txt
+```
 
 ## Repository Structure
 
 ```text
 mbta-fleet-operations/
-|
+│
 ├── dags/
 │   ├── mbta_realtime_cloud_pipeline.py
 │   └── mbta_historical_cloud_pipeline.py
@@ -473,20 +558,39 @@ mbta-fleet-operations/
 │
 ├── src/
 │   ├── dashboard/
+│   │   └── app_bigquery.py
+│   │
 │   ├── ingestion/
+│   │   └── vehicle_positions_gcs.py
+│   │
 │   ├── loading/
+│   │   ├── gcs_vehicle_events_to_bigquery.py
+│   │   └── gtfs_stops_to_bigquery.py
+│   │
 │   ├── quality/
+│   │   └── spark/
+│   │
 │   └── spark/
+│       └── build_lamp_stop_events.py
 │
 ├── docs/
-│   └── engineering_notes.md
+│   ├── engineering_notes.md
+│   └── images/
+│       ├── dashboard_overview.png
+│       └── dashboard_trip_analysis.png
 │
 ├── legacy/
 │   └── postgres/
+│       ├── dags/
+│       ├── src/
+│       ├── sql/
+│       ├── docker-compose.yml
+│       └── requirements.txt
 │
-├── README.md
 ├── requirements.txt
-└── docker-compose.yml
+├── requirements-airflow.txt
+├── requirements-dbt.txt
+└── README.md
 ```
 
 ## Legacy PostgreSQL Implementation
@@ -504,25 +608,38 @@ It includes earlier work on:
 - local realtime ingestion
 - PostgreSQL indexing
 - incremental SQL transformations
-- local historical loading
+- historical backfills
+- Parquet exports
 - local Streamlit analytics
 - pipeline runtime optimization
 
-The production architecture was later migrated to GCS, BigQuery, dbt, Dataproc Serverless, and cloud-oriented Airflow orchestration.
+The production-style architecture was later migrated to:
 
-The legacy implementation is retained to document the engineering evolution of the project, but it is not required by the current cloud realtime or historical pipelines.
+```text
+GCS
+BigQuery
+dbt
+Dataproc Serverless
+Spark
+Airflow
+Streamlit
+```
 
-## Engineering Principles
+The PostgreSQL implementation is retained to document the engineering evolution of the project but is not required by either current cloud pipeline.
 
-This project intentionally avoids adding infrastructure solely for technology breadth.
+## Engineering Decisions
 
-Tools were introduced when they addressed a concrete requirement:
+The project intentionally avoids adding infrastructure solely for technology breadth.
 
-- GCS for immutable raw storage and replayability
-- BigQuery for scalable analytical storage
-- dbt for warehouse transformation and testing
-- Spark for historical LAMP processing
-- Airflow for independent realtime and historical orchestration
-- Streamlit for presenting operational metrics
+Each major tool addresses a concrete requirement:
 
-The architecture evolved in response to measured scalability, reliability, and maintainability problems rather than as a collection of disconnected technologies.
+| Technology | Problem addressed |
+|---|---|
+| GCS | Immutable raw storage, replayability, backfills |
+| BigQuery | Scalable analytical warehouse |
+| dbt | Structured transformations, incremental models, testing |
+| Spark | Historical LAMP processing |
+| Airflow | Realtime and historical workflow orchestration |
+| Streamlit | Operational analytics presentation |
+
+The architecture evolved in response to measured scalability, reliability, and maintainability requirements rather than as a collection of disconnected technologies.
