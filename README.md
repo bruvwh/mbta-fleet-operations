@@ -500,8 +500,8 @@ The realtime DAG runs every five minutes.
 For local Airflow execution:
 
 ```bash
-cd /Users/andrewlu/Desktop/mbta-fleet-operations
-
+git clone https://github.com/bruvwh/mbta-fleet-operations.git
+cd mbta-fleet-operations
 source .airflow-venv/bin/activate
 
 export AIRFLOW_HOME="$PWD/.airflow"
